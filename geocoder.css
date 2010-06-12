@@ -1,0 +1,14 @@
+th#table-header  {
+  font-weight: bold;
+  text-align: center;
+  text-decoration: underline;
+}
+
+td#table-footer {
+  font-size: 90%;
+}
+
+#batch-name {
+  font-weight: bold;
+}
+

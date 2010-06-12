@@ -1,0 +1,1252 @@
+<?php
+// $Id$
+/**
+ * Create location nodes from a comma delimited list of addresses.
+ * @file
+ */ 
+/**
+ * Implementation of hook_help().
+ *
+ */
+function geocoder_help($path, $arg) {
+  if ($path == 'admin/help#geocoder') {
+    $txt = 'This module enables users to submit a comma '
+      .'delimited list of addresses to be geocoded and '
+      .'converted into nodes.';
+    $replace = array();
+    return '<p>'. t($txt, $replace) .'</p>'; 
+  }
+}
+/**
+ * I vacilated about whether to implement this custom content
+ * type with code or the CCK module. After testing both, I'm 
+ * inclined toward the CCK module. To go back though, if you want
+ * to use this code, just uncomment the next two functions
+ * and replace geocoder_addresses_batch content type name
+ * with geocoder_batch.
+ *
+ * Implementation of hook_node_info().
+ * Create 'geocoder_batch' (Batch of Addresses) content type.
+ *
+ *
+function geocoder_node_info() {
+  return array(
+    'geocoder_batch' => array(
+      'module' => 'geocoder',
+      'name' => t('Batch of Addresses'),
+      'description' => t('A comma seperated list (CSV) of addresses.'),
+      'has_title' => TRUE,
+      'title_label' => t('Batch Name'),
+      'has_body' => TRUE,
+      'body_label' => t('Comma separated list (CSV) of addresses.'),
+      'locked' => TRUE, // Do not allow users to change name 
+    )
+  );
+}
+/**
+ * Create the form for submitting/editing geocoder_batch 
+ * (Batch of Addressses) nodes.
+ * Implements hook_form().
+ * REPLACE THIS WITH CCK - easier to handle user permissions.
+ * 
+ *
+function geocoder_form(&$node) {
+  $type = node_get_types('type', $node);
+  if ($type->has_title) {
+    $form['title'] = array(
+      '#type' => 'textfield',
+      '#title' => check_plain($type->title_label),
+      '#required' => true,
+      '#default_value' => $node_title,
+      '#weight' => -5,
+    );
+  }
+  if ($type->has_body) {
+    $form['body_field'] = node_body_field(
+      $node,
+      $type->body_label,
+      $type->min_word_count
+    );
+   }
+  return $form;
+}
+
+/**
+ * Implementation of hook_menu().
+ *
+ */
+function geocoder_menu() {
+  // Page callback for admin/settings page
+  $items['admin/settings/geocoder'] = array(
+    'title' => 'Geocoder',
+    // note: replacement for geocoder_admin_settings
+    'page callback' => ('geocoder_setup'),
+    'access arguments' => array('administer geocoder'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  /*
+  $items['admin/settings/geocoder'] = array(
+    'title' => 'Geocoder',
+    'page callback' => ('drupal_get_form'),
+    'page arguements' => array('geocoder_admin_settings'),
+    'access arguments' => array('administer geocoder'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  */
+  // Page callback for reviewing and administering
+  // batch submissions.
+  $items['admin/geocoder'] = array(
+    'title' => 'Geocoder',
+    'page callback' => 'geocoder_admin',
+    'access arguments' => array('administer geocoder'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  // Page callback for processing selected batch.
+  $items['admin/geocoder/%'] = array(
+    'title' => 'Geocoder: Process Batch',
+    'page callback' => 'geocoder_admin_batch',
+    'page arguments' => array(2), // <- nid of batch (from % in path)
+    'access arguments' => array('administer geocoder'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+} 
+/**
+ * Implementation of hook_perm().
+ *
+ */
+function geocoder_perm() {
+  return array('administer geocoder');
+}
+/**
+ * admin/settings/geocoder
+ * Compose settings form.
+ */
+function geocoder_setup() {
+  $sb = drupal_get_form('geocoder_setup_form');
+  return $sb;
+}
+/**
+ * Build settings form for admin/settings/geocoder.
+ *
+ */
+function geocoder_setup_form() {
+  // Get/set Sunlight Labs API Key
+  // and get/set Google Maps API Key
+  $form['api_keys'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('API Keys'),
+    '#weight' => 0,
+  );  
+  $form['api_keys']['sunlightlabs_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Sunlight Labs API Key'),
+    '#size' => 60,
+    '#default_value' => variable_get('sunlightlabs_key', null),
+    '#description' => t('<a href="@url">Register for a Sunlight Labs API key here: @url</a>', array('@url' => 'http://services.sunlightlabs.com/api/register/')),
+  );
+  $form['api_keys']['googlemap_api_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Google Maps API Key'),
+    '#size' => 60, 
+    '#default_value' => variable_get('googlemap_api_key', null),
+    '#description' => t('Your personal Googlemaps API key.      You must get this for each separate website at <a href="http://www.google.com/apis/maps/">Google Map API website</a>.'),
+  );
+  $form['geocoder_set'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Geocoder Settings'),
+    '#weight' => 1,
+  );
+  $disabled = (module_exists('district') == TRUE) ? FALSE : TRUE;
+  if ($disabled == TRUE)
+    variable_set('district_taxonomy', FALSE);
+  $default = ($disabled == TRUE) ? FALSE : TRUE;
+  $form['geocoder_set']['district_taxonomy'] = array(
+    '#type' => 'checkbox',
+    '#title' => t("Apply district taxonomy terms (requires District module)"),
+    '#default_value' => variable_get('district_taxonomy', $default),
+    '#disabled' => $disabled,
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save Settings'), 
+    '#weight' => 5,
+  );
+  return $form;
+}
+/**
+ * Settings/setup form submission handler, functions like a hook.
+ *
+ */
+function geocoder_setup_form_submit($form, &$form_state) {
+  // save sunlight labs key
+  variable_set('sunlightlabs_key', $form_state['values']['sunlightlabs_key']);
+  // save google maps key
+  variable_set('googlemap_api_key', $form_state['values']['googlemap_api_key']);
+  // save settings
+  variable_set('district_taxonomy', $form_state['values']['district_taxonomy']);
+  $form_state['redirect'] = 'admin/settings/geocoder';
+}
+/**
+ * HOOK_MENU() FOR THIS CALLBACK IS CURRENTLY
+ * REPLACED BY GEOCODER_SETUP().
+ *
+ * Callback for admin/settings/geocoder
+ * Form builder.
+ *
+ * @see systems_settings_form().
+ * /
+function geocoder_admin_settings() {
+  // Get/set Sunlight Labs API Key
+  // and get/set Google Maps API Key
+  $form['api_keys'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('API Keys'),
+    '#weight' => 0,
+  );  
+  $form['api_keys']['sunlightlabs_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Sunlight Labs API Key'),
+    '#size' => 60,
+    '#default_value' => variable_get('sunlightlabs_key', null),
+    '#description' => t('<a href="@url">Register for a Sunligh    t Labs API key here: @url</a>', array('@url' => 'http://servic    es.sunlightlabs.com/api/register/')),
+  );
+  $form['api_keys']['googlemap_api_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Google Maps API Key'),
+    '#size' => 60, 
+    '#default_value' => variable_get('googlemap_api_key', null),
+    '#description' => t('Your personal Googlemaps API key.      You must get this for each separate website at <a href="http:/    /www.google.com/apis/maps/">Google Map API website</a>.'),
+  );
+  $form['geocoder_set'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Geocoder Settings'),
+    '#weight' => 1,
+  );
+  $form['geocoder_set']['districts'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Look up US political districts'),
+    '#default_value' => TRUE,
+  );
+  $form['geocoder_set']['district_taxonomy'] = array(
+    '#type' => 'checkbox',
+    '#title' => t("Apply district taxonomy terms (District module)"),
+    '#default_value' => TRUE,
+  );
+  return system_settings_form($form);
+} 
+/**
+ * Callback for admin/geocoder.
+ * Review submissions. Select batches
+ * to process.
+ *
+ */
+function geocoder_admin() {
+  // Check for new batch submissions. 
+  // If there are geocoder_addresses_batch node types
+  // that have not been added to the geocoder_batch table,
+  // add them now.
+  _geocoder_admin_addnew();
+  // Get a list of batches submitted
+  $results = db_query('SELECT n.nid, n.title, n.created, u.name, '
+               .'n.uid, g.geocoded '
+               .'FROM {node} n '
+               .'JOIN {users} u ON n.uid = u.uid '
+               .'JOIN {geocoder_batch} g ON n.nid = g.nid '
+               ."WHERE n.type = 'geocoder_addresses_batch' "
+               .'ORDER BY created DESC '
+               .'LIMIT 200 ' );
+  // Pass the list of batches to a theme function
+  // to prepare for display. This function returns 
+  // explanitory text and a table/list of batches. 
+  $sb = theme('geocoder_addresses_batch_list', $results);
+  return $sb;
+}
+/**
+ * If there are geocoder_addresses_batch node types
+ * (content types) that have not been added to the 
+ * geocoder_batch table yet, add them here.
+ *
+ */
+function _geocoder_admin_addnew() {
+  $results = db_query('SELECT n.nid, g.nid AS batch_id ' 
+                    .'FROM {node} n '
+                    .'LEFT JOIN {geocoder_batch} g ON n.nid = g.nid '
+                    ."WHERE n.type = 'geocoder_addresses_batch' "
+                    .'AND (ISNULL(g.nid)) ');
+  while($node = db_fetch_object($results)) {
+    // Insert new batches into geocoder_batch table
+    db_query("INSERT INTO {geocoder_batch} (nid) VALUES (%d)", $node->nid);
+  }
+}
+/**
+ * Implementation of hook_theme().
+ *
+ */
+function geocoder_theme() {
+  return array(
+    // Implemented by geocoder_admin_settings
+    // at path = admin/settings/geocoder.
+    'geocoder_addresses_batch_list' => array(
+      'arguments' => array('results' => NULL),
+    ),
+    // Implemented by geocoder_admin_batch at
+    // path = admin/geocoder/%.
+    'geocoder_addresses_batch' => array(
+      'arguments' => array('batch_info' => NULL,
+                           'batch_stats' => NULL,
+                           'buttons' => NULL)
+    ),
+  );
+}
+/**
+ * Theme function for theming batch list on 
+ * admin/settings/geocoder.
+ *
+ * @param $results
+ * Results querying for all geocoder_addresses_batch nodes
+ * @return $output
+ * An HTML themed string including a table listing all batches.
+ *
+ * Compose pieces of content: $txt_h2,$ txt, and $table. ($txt_h1
+ * is not included here because the title is already 
+ * created in hook_menu().)
+ * Then put them together in $output.
+ *
+ */
+function theme_geocoder_addresses_batch_list($results) {
+  // Add module's style sheet
+  $module_path = drupal_get_path('module', 'geocoder');
+  $full_path = $module_path .'/geocoder.css';
+  drupal_add_css($full_path);
+  // Compose content
+  $txt_h2 = t('Process Submitted Batches of Addresses');
+  $txt = t('Below is a list of batches of addresses '
+          .'submitted by users to be geocoded and (in most cases) '
+          .'turned into nodes. The list is sorted in decending '
+          .'order, from most recent submissions to oldest. To '
+          .'process a batch of addresses follow the link in the '
+          .'GeoAdmin column. (If there are more than 200 submissions, ' 
+          .'the table will show the 200 most recent.)');
+  // Build table
+  // $results includes nid, created, title, [user] name, uid, geocoded
+  $table = '<table>';
+  $table .= '<tr>';
+  $table .= '<th>Date Submitted</th>';
+  $table .= '<th>Batch</th>';
+  $table .= '<th>Submitted By</th>';
+  $table .= '<th>Geocoded</th>';
+  $table .= '<th>GeoAdmin</th>';
+  $table .= '</tr>';
+  while ($batch = db_fetch_object($results)) {
+      $date = date('m-d-Y', $batch->created);
+      $batch_name = check_plain($batch->title);
+      $nid = $batch->nid;
+      $node_path = "node/$nid";
+      $batch_node = l($batch_name, $node_path);
+      $usr_name = $batch->name;
+      $usr_path = 'user/'. $batch->uid;
+      $user = l($usr_name, $usr_path);
+      $geocoded = ($batch->geocoded == 0) ? 'No' : 'Yes';
+      $text = t('Process Batch');
+      $path = "admin/geocoder/$nid";
+      $geoadmin = l($text, $path);
+    $table .= '<tr>';
+    $table .= "<td>$date</td>";
+    $table .= "<td>$batch_node</td>";
+    $table .= "<td>$user</td>";
+    $table .= "<td>$geocoded</td>";
+    $table .= "<td>$geoadmin</td>";
+    $table .= '</tr>';
+  }
+  $table .= '</table>';
+
+  // Construct $output
+  $output .= '<h2 class="geocoder" id="batch-list-subtitle">'. $txt_h2 .'</h2>';
+  $output .= '<p class="geocoder" id="batch-list-text">'. $txt .'</p>';
+  $output .= $table;
+
+  return $output;
+}
+/** 
+ * Theme function for displaying batch processing info
+ * about the batch being processed on admin/geocoder/%
+ * (%  is the selected's batch's nid).
+ *
+ */
+function theme_geocoder_addresses_batch($batch_info, $batch_stats, $batch_form) {
+  // Add module's style sheet
+  $module_path = drupal_get_path('module', 'geocoder');
+  $full_path = $module_path .'/geocoder.css';
+  drupal_add_css($full_path);
+
+  // Display info about the batch being processed ($batch_info)
+  $batch_name = l($batch_info['batch_name'], 'node/'. $batch_info['nid']); 
+  $user = l($batch_info['user_name'], 'user/'. $batch_info['uid']);
+  $submitted = date('m-d-Y', $batch_info['created']);
+  if ($batch_info['submission_csv'] == null) {
+    $csv_s = '';
+  } else {
+    $csv_s = l($batch_info['nid'] .'-submission.csv', $batch_info['submission_csv']);
+  }
+  $geocoded = ($batch_info['geocoded'] == 0) ? 'No' : 'Yes'; 
+  if ($batch_info['results_csv'] == null) {
+    $csv_r = '';
+  } else {
+    $csv_r = l($batch_info['nid'] .'-results.csv', $batch_info['results_csv']);
+  }
+  $nodes_created = ($batch_info['nodes_created'] == 0) ? 'No' : 'Yes'; 
+  $email_sent = ($batch_info['confirm_email_sent'] == 0) ? 'No' : 'Yes';
+    $output = "<table class='geocoder'>";
+    $output .= "<tr><td id='batch-name'>Batch Name:</td><td id='batch-name'>$batch_name</td></tr>";
+    $output .= "<tr><td>Created By:</td><td>$user</td></tr>";
+    $output .= "<tr><td>Submitted On:</td><td>$submitted</td></tr>";
+    $output .= "<tr><td>Submission CSV:</td><td>$csv_s</td></tr>";
+    $output .= "<tr><td>Geocoded:</td><td>$geocoded</td></tr>";
+    $output .= "<tr><td>Results CSV:</td><td>$csv_r</td></tr>";
+    $output .= "<tr><td>Nodes (Locations) Created:</td><td>$nodes_created</td></tr>";
+    $output .= "<tr><td>Confirm Email Sent:</td><td>$email_sent</td></tr>";
+    $output .= '</table>';
+
+  // Display statistics about batch being processed ($batch_stats)
+  $total = $batch_stats['total'];
+//  $total = ($total == 0) ? 'Run 
+  $dist_r = $batch_stats['dist_r'];
+  $dist_s1 = $batch_stats['dist_s1'];
+  $dist_s2 = $batch_stats['dist_s2'];
+  $nodes = $batch_stats['nodes'];
+  $latlng = $batch_stats['latlng'];
+  $thead = t('Batch Statistics');
+  $tfoot = t('These statistics are intended to help you process your batch, '
+            .'to identify if you should run Geocode Addresses (see button below) again, '
+            .'or to flag problems where data is not processing correctly. '
+            .'<br /><br /><strong>Total: </strong>Number of records in the submitted batch of CSV data'
+            .'<br /><strong>Geocoded: </strong>Number of records with where Geocoder '
+            .'has found latitude and longitude coordinates. If this number is less than the total '
+            .'and you have run Geocoder a few times, this batch has records with bad addresses.  '
+            .'<br /><strong>Rep. and Sen. Districts: </strong>Number of corresponding ' 
+            .'districts found. Each United States address should have one corresponding representative '
+            .'and two corresponding senate districts.'
+            .'<br /><strong>Nodes Created: </strong>After you run Create Nodes (see button below) '
+            .'you should have one node for each geocoded address.');
+  $output .= '<br /><table>';
+  $output .= "<thead><tr><th colspan='6' id='table-header'>$thead</th></tr></thead>";
+  $output .= '<tr>';
+  $output .= "<th>Total in Batch</th>";  
+  $output .= "<th>Geocoded</th>";  
+  $output .= "<th>Rep. Districts</th>";  
+  $output .= "<th>Sen. A Districts</th>";  
+  $output .= "<th>Sen. B Districts</th>";  
+  $output .= "<th>Nodes Created</th>";
+  $output .= '</tr><tr>';  
+  $output .= "<td>$total</td>";  
+  $output .= "<td>$latlng</td>";  
+  $output .= "<td>$dist_r</td>";  
+  $output .= "<td>$dist_s1</td>";  
+  $output .= "<td>$dist_s2</td>";  
+  $output .= "<td>$nodes</td>";
+  $output .= '</tr>';  
+  $output .= "<tr><td colspan='6' id='table-footer'>$tfoot</td></tr>";
+  $output .= '</table>';
+
+  // Display processing form (processing buttons, $batch_form).
+  $output .= "<div id='batch-form'>$batch_form</div>";
+  
+  return $output;
+}
+/**
+ * Callback for admin/geocoder/%.
+ * Review summary statistics and process a submitted 
+ * batch of addresses. That is, get latitude/longitude 
+ * coordinates and district information.
+ *
+ * @array $batch_info
+ *
+ *
+ * @array $batch_stats
+ *
+ *
+ * @array $batch_form
+ *
+ */
+function geocoder_admin_batch($nid) {
+  // Check for valid nid
+  $nid = intval($nid);
+  if ($nid == 0) {
+    return t('Node ID must be an integer.');
+  } else {
+  // If submission_csv has not been created, create it
+  // and store records from submission_csv in geocoder table.
+  geocoder_admin_batch_csvs($nid);
+  }
+
+  // Store nid in variable table, for use
+  // by batch processing buttons in batchform.
+  variable_set('geocoder_current_batch_nid', $nid);
+
+  // Return array $batch_info with info about 
+  // the batch being processed.
+  $batch_info = _geocoder_admin_batch_info($nid);
+
+  // Return array $batch_stats with summary statistics
+  // about the batch being processed.
+  $batch_stats = _geocoder_admin_batch_stats($nid);
+ 
+  // Compose form (w/ batch processing buttons)
+  $batch_form = geocoder_addresses_batchform_compose();
+ 
+  // Display info about the batch being processed and the 
+  // accompanying processing form.
+  $sb = theme('geocoder_addresses_batch', $batch_info, $batch_stats, $batch_form);
+
+  return $sb;
+}
+/**
+ * Called by geocoder_admin_batch().
+ *
+ * @return $batch_info
+ * An array with information about the batch being 
+ * reviewed or processed
+ *
+ */
+function _geocoder_admin_batch_info($nid) {
+  $results = db_query('SELECT n.nid, n.title, n.created, u.name, '
+               .'n.uid, g.geocoded, g.submission_csv, g.results_csv, '
+               .'g.nodes_created, g.confirm_email_sent '
+               .'FROM {node} n '
+               .'JOIN {users} u ON n.uid = u.uid '
+               .'JOIN {geocoder_batch} g ON n.nid = g.nid '
+               ."WHERE n.nid = $nid "
+               );
+  while($node = db_fetch_object($results)) {
+    $batch_info['nid'] = $nid;
+    $batch_info['batch_name'] = $node->title;
+    $batch_info['user_name'] =  $node->name;
+    $batch_info['uid'] =  $node->uid;
+    $batch_info['created'] =  $node->created;
+    $batch_info['submission_csv'] =  $node->submission_csv;
+    $batch_info['geocoded'] =  $node->geocoded;
+    $batch_info['results_csv'] =  $node->results_csv;
+    $batch_info['nodes_created'] =  $node->nodes_created;
+    $batch_info['confirm_email_sent'] =  $node->confirm_email_sent;
+  } 
+  return $batch_info;
+}
+/**
+ * Called by geocoder_admin_batch().
+ *
+ * @return  $batch_stats
+ * An array of statistics about the batch being reviewed or processed.
+ *
+ */
+function _geocoder_admin_batch_stats($nid) {
+  // Count:
+  // total number of addresses submitted (total records in batch)
+  $results = db_query("SELECT Count(g.gid) FROM {geocoder} g WHERE batch_nid = $nid");
+  $batch_stats['total'] = db_result($results);  
+
+  // total number rep districts
+  $results = db_query('SELECT Count(g.district_rep) FROM {geocoder} g ' 
+                      ."WHERE batch_nid = $nid "
+                      ."AND g.district_rep <> '' ");
+  $batch_stats['dist_r'] = db_result($results); 
+
+  // total number senator 1 districts
+  $results = db_query('SELECT Count(g.district_sen1) FROM {geocoder} g ' 
+                      ."WHERE batch_nid = $nid "
+                      ."AND g.district_sen1 <> '' ");
+  $batch_stats['dist_s1'] = db_result($results);
+
+  // total number senator 2 districts
+  $results = db_query('SELECT Count(g.district_sen2) FROM {geocoder} g ' 
+                      ."WHERE batch_nid = $nid "
+                      ."AND g.district_sen2 <> '' ");
+  $batch_stats['dist_s2'] = db_result($results);
+
+  // total number of nodes created (g.nid) 
+  $results = db_query('SELECT Count(g.nid) FROM {geocoder} g ' 
+                      ."WHERE batch_nid = $nid "
+                      ."AND g.nid <> 0 ");
+  $batch_stats['nodes'] = db_result($results);
+
+  // total number of records geocoded (latitudes and longitude are not 
+  // 0.0, the default before geocoding)
+  $results = db_query('SELECT Count(g.latitude) FROM {geocoder} g ' 
+                      ."WHERE batch_nid = $nid "
+                      .'AND latitude <> 0.0 '
+                      .'AND longitude <> 0.0 ');
+  $batch_stats['latlng'] = db_result($results);
+    
+  return $batch_stats;
+ 
+}
+/**
+ * Called by geocoder_admin_batch()
+ *
+ */
+function geocoder_addresses_batchform_compose() {
+  $sb = drupal_get_form(geocoder_addresses_batchform_compose_form);
+  return $sb;
+}
+/**
+ * Called by geocoder_addresses_batchform_compose().
+ * 
+ */
+function geocoder_addresses_batchform_compose_form() {
+  // Note to user about Geocode Addresses Button
+  $form['geocode_note'] = array(
+    '#type' => 'item',
+    '#title' => t('Geocode Addresses'),
+    '#description' => t("This button goes one-by-one through your batch of "
+        ."addresses and looks up latitude/longitude coordinates "
+        ."using Google's geocoding service. "
+        ."With large batches (hundreds or thousands of records), Google "
+        ."may be unable to get through every record the first time. "
+        ."If Google times out "
+        ."before getting all the way through your list, you should see " 
+        ."an error message. Simply click the Back button, refresh (if "
+	."you want to confirm that the Geocoded number went up) and run "
+        ."Geocode Addresses again. You should see the number of geocoded " 
+        ."records increase each time you run Geocode " 
+        ."Addresses until Google finishes geocoding your entire list."),
+  );
+  // Geocode batch of addressess
+  $form['geocode'] = array(
+    '#type' => 'submit',
+    '#value' => t('Geocode Addresses'),
+    '#submit' => array('geocoder_admin_batch_geocode'),
+  );
+  // Note to user about political districts and legislators
+  $form['pol_note'] = array(
+    '#type' => 'item',
+    '#title' => t('Get Political Districts and Legislators'),
+    '#description' => t("Look up political districts and "
+                       ."corresponding legislators for geocoded "
+                       ."addresses. If you're processing a large batch, "
+		       ."like Google, Sunlight Labs will time out and "
+		       ."send you an error message. Just click the back " 
+		       ."button and run it again until you've processed " 
+		       ."the whole batch."),
+  );
+  // Get political districts and legislators
+  $form['pol'] = array(
+    '#type' => 'submit', 
+    '#value' => t('Get Districts and Legislators'),
+    '#submit' => array('geocoder_admin_batch_pol'),
+  );
+  // Note to user about Create Nodes Button
+  $form['nodes_note'] = array(
+    '#type' => 'item',
+    '#title' => t('Create Nodes (Locations)'),
+    '#description' => t('Create a new "location" node for each ' 
+                        .'geocoded record. All new nodes will inherit the '
+                        .'same taxonomy terms/tags that have been applied '
+                        .'too the parent batch. '),
+  );
+  // Check to see if user wants nodes to be created from 
+  // submitted addresses
+  $batch_nid = variable_get('geocoder_current_batch_nid', null);
+  $results = db_query("SELECT field_publish_addresses_value "
+                        ."FROM {content_type_geocoder_addresses_batch} "
+			."WHERE nid = $batch_nid " );
+  $create_nodes = db_result($results);
+  if ($create_nodes == 1) {
+    // Create nodes for each address record
+    $form['nodes'] = array(
+      '#type' => 'submit', 
+      '#value' => t('Create Nodes'),
+      '#submit' => array('geocoder_admin_batch_nodes'),
+    );
+  } else { // user doesn't want submission published
+      $form['nodes'] = array(
+        '#type' => 'item',
+	'#title' => '',
+	'#description' => t('<strong>This processing option is '
+	              .'unavailable for this batch. '
+		      .'User requested not to have '
+	              .'submission published as nodes.</strong>'),
+      );
+  }
+  // Note to user about Send Confirm Email Button
+  $form['sendemail_note'] = array(
+    '#type' => 'item',
+    '#title' => t('Send Confirm Email'),
+    '#description' => t("ADD NOTE HERE "),
+  );
+  // THIS BUTTON IS STILL UNDER DEVELOPMENT. THE IDEA IS THAT,
+  // IT WOULD BE CURTIOUS FOR AN ADMINISTRATOR TO CLICK THE BUTTON
+  // TO SEND A NOTE TO THE PERSON WHO SUBMITTED THE ADDRESSES TO LET
+  // THEM KNOW THAT THE BATCH HAS BEEN PROCESSED AND IS AVAILABLE FOR 
+  // DOWNLOAD.
+  // Send user a confirm email to let them know
+  // their submission has been processed 
+  $form['sendemail'] = array( 
+    '#type' => 'submit',
+    '#value' => t('Send Confirm Email'),
+    '#submit' => array('geocoder_admin_batch_email'),     
+  );
+  $form['sendemail_notworking'] = array(
+    '#type' => 'item',
+    '#title' => t('Under Construction'),
+    '#description' => t("Sorry this button doesn't work yet. We're still working on it. Soon you will be able to click this button to shoot a quick note to the person who submitted the addresses, to let them know their records have been processed and their results are available for download."),
+  );
+  return $form;
+}
+/**
+ * Function called by Geocode Batch button.
+ * Geocode and find district information for 
+ * each record in the selected batch.
+ *
+ */
+function geocoder_admin_batch_geocode() {
+  // Get nid of the batch currently being processed
+  $batch_nid = variable_get('geocoder_current_batch_nid', null);
+
+  // Get geocodes from Google and political districts from Sunlight Labs
+  geocoder_admin_batch_getgeocodes($batch_nid);
+
+  // Create new results_csv for user to download.
+  // Note: This file should be re-created every time Geocode Addresses
+  // is run. If the user runs it several times, it is probably because
+  // Google didn't code all the addresses the first time. So, each time, 
+  // there should be new results and a more complete results file.
+  geocoder_admin_batch_csvr($batch_nid);
+}
+/**
+ * Called by geocoder_admin_batch_geocode().
+ * Create submission_csv file, and add records to 
+ * geocoder table.
+ *
+ */
+function geocoder_admin_batch_csvs($batch_nid) {
+  // Check to see if submission_csv has been created. If it has,
+  // submitted records should have already been added to the 
+  // geocoder table and our work here is done.
+  $batch_info = _geocoder_admin_batch_info($batch_nid);
+  if ($batch_info['submission_csv'] == null) {
+    // Compose file path/name 
+    $module_path = drupal_get_path('module', 'geocoder');
+    $full_path = $module_path .'/csv_files/'. $batch_nid .'-submission.csv';
+    // Get comma separated submission.
+    $results = db_query("SELECT body FROM {node_revisions} WHERE nid = $batch_nid");
+    while ($csv = db_result($results)) {
+      // Create csv file,$batch_nid-submission.csv.
+      file_put_contents($full_path, $csv);
+    }
+    // Store name of submission_csv in geocoder_batch table 
+    db_query("UPDATE {geocoder_batch} SET submission_csv = '%s' WHERE nid = %d",
+              $full_path,
+              $batch_nid);
+    // Insert submission_csv records into geocoder table.
+    // First open the csv file.
+    $file = $full_path;
+    $fp = fopen($file, 'r');
+    // Now iterate through, line by line.
+    $id = 0;
+    while (!feof($fp)) {
+      // fgetcsv() retrieves each line of the csv file as an array.
+      $line = fgetcsv($fp);
+      // Data Validation: returns $valid = 1 or 0. 
+      // If valid, continue, otherwise skip 
+      // to next line of CSV data.
+      $valid = geocoder_admin_batch_csvs_validation($line); 
+      $debug = $valid;
+      variable_set('debug', $debug);
+      if ($valid == 1) {        
+        // Make this into an array that's easier to manage.
+        $name[$id] = $line[0];
+        $street[$id] = $line[1];
+        $city[$id] = $line[2];
+        $state[$id] = $line[3];
+        $postal_code[$id] = $line[4];
+        $info[$id] = $line[5];
+      // Increment $id.
+      $id++;     
+      }
+    }
+    // Close the csv file.
+    fclose($fp);
+    // Now insert each record from the csv file into
+    // the geocoder table. Start at $id = 1, not 0, 
+    // to exclude heading row.
+    for ($i = 1; $i <= $id; $i++) {
+      db_query('INSERT INTO {geocoder} (batch_nid, name, street, city, state, postal_code, info) '
+                ."VALUES (%d, '%s', '%s', '%s', '%s', '%s', '%s')",
+                $batch_nid,
+                check_plain($name[$i]),
+                check_plain($street[$i]),
+                check_plain($city[$i]),
+                check_plain($state[$i]),
+                check_plain($postal_code[$i]),
+                check_plain($info[$i]) );
+    }
+  }
+}
+/**
+ * @return $valid
+ * Returns boolean true or false
+ *
+ * Data validation here is basically just checking to
+ * make sure that data is actually coming in. This aims
+ * to filter out incomplete addresses and blank lines
+ * without being too strict. In a later step, we will use Drupal's 
+ * check_plain() function to protect against 
+ * anything malicious getting entered into the database.
+ *
+ */
+function geocoder_admin_batch_csvs_validation($line) {
+  $valid = 1;
+  if (strlen($line[0]) < 2) // name
+    $valid = 0;
+  if (strlen($line[1]) < 3) // street
+    $valid = 0;
+  if (strlen($line[2]) < 3) // city
+    $valid = 0;
+  if (strlen($line[3]) < 2) // state
+    $valid = 0;
+  if (strlen($line[4]) < 5) // postal/zip code
+    $valid = 0;
+  return $valid;
+}
+/**
+ * Called by geocoder_admin_batch_geocode().
+ *
+ * Iterate through submitted addresses one-by-one,
+ * using Google's service to geocode addresses.
+ *
+ */
+function geocoder_admin_batch_getgeocodes($batch_nid) {
+  // Get key
+  $google_key = variable_get('googlemap_api_key', null);
+
+  // Get latitude and longitude coordinates from Google
+  define("MAPS_HOST", "maps.google.com");
+
+  // Get records in the geocoder table (from this batch only)
+  // that have not been geocoded.
+  // NOTE: Geocoder is currently not using postal/zip code to look up
+  // latitude and longitude. Google will accept a zip code, but 
+  // Google  doesn't use zip in it's examples
+  // online, and it seems to work fine the way so far.
+  $results = db_query("SELECT gid, street, city, state "
+                      ."FROM {geocoder} "
+                      ."WHERE batch_nid = $batch_nid "
+                      ."AND latitude = 0.0 "
+                      ."AND street <> '' "
+                      ."AND city <> '' "
+                      ."AND state <> '' ");
+ 
+  // Initialize delay in geocode speed
+  $delay = 0;
+  $base_url = "http://" . MAPS_HOST . "/maps/geo?output=xml" . "&key=" . $google_key;
+
+  // Iterate through the rows, geocoding each address
+  while ($row = db_fetch_array($results)) {
+    $geocode_pending = true;
+
+  while ($geocode_pending) {
+    $address = $row['street'] .', '. $row['city'] .', '. $row['state'];
+    $gid = $row['gid'];
+    $request_url = $base_url . "&q=" . urlencode($address);
+    $xml = simplexml_load_file($request_url) or die("url not loading");
+
+    $status = $xml->Response->Status->code;
+    if (strcmp($status, "200") == 0) {
+      // Successful geocode
+      $geocode_pending = false;
+      $coordinates = $xml->Response->Placemark->Point->coordinates;
+      $coordinatesSplit = split(",", $coordinates);
+      // Format: Longitude, Latitude
+      $lat = $coordinatesSplit[1];
+      $lng = $coordinatesSplit[0];
+    
+      // Store coordinates in geocoder table.
+      db_query("UPDATE {geocoder} "
+                ." SET latitude = '%s', longitude = '%s' "
+                ." WHERE gid = %d ",
+                mysql_real_escape_string($lat),
+                mysql_real_escape_string($lng),
+                $gid);
+    } else if (strcmp($status, "620") == 0) {
+      // sent geocodes too fast
+      $delay += 100000;
+    } else {
+      // failure to geocode
+      $geocode_pending = false;
+      echo "Address " . $address . " failed to geocoded. ";
+      echo "Received status " . $status . " \n";
+    }
+    usleep($delay);
+    }  // end while ($geocode_pending)
+  } // end while ($row = db_fetch_array...)
+  // Update geocoder_batch to indicat that this 
+  // batch has been geocoded.
+  db_query("UPDATE {geocoder_batch} SET geocoded = 1 WHERE nid = $batch_nid ");
+}
+/**
+ * Called by Get Districts and Legislators button
+ * on admin/geocoder/%
+ *
+ * Iterate through geocoded addresses one-by-one,
+ * using Sunlight Lab's services and look up US legislators
+ * and political districts for geocoded addresses.
+ *
+ */
+function geocoder_admin_batch_pol() {
+  // Get nid of the batch currently being processed
+  $batch_nid = variable_get('geocoder_current_batch_nid', null);
+
+  // Get key
+  $sunlightlabs_key = variable_get('sunlightlabs_key', null);
+
+  $results = db_query("SELECT gid, latitude, longitude "
+                      ."FROM {geocoder} "
+                      ."WHERE batch_nid = $batch_nid "
+                      ."AND latitude <> 0.0 "  // <- it has been geocoded
+                      ."AND longitude <> 0.0 " 
+                      ."AND district_rep = '' "); // <- but it doesn't have district info
+   
+  // Iterate through the rows, geocoding each address
+  while ($row = db_fetch_array($results)) {
+    $pending = true;
+    $attempt_counter = 0;
+ 
+  // Attempt to retrieve data up to 10 times per record.
+  while ($pending && attempt_counter<10) {
+    $attempt_counter++;
+
+    $lat = $row['latitude'];
+    $lng = $row['longitude'];
+    $gid = $row['gid'];
+
+    // Retrieve district information from Sunlight Labs. 
+    // Use districts.getDistrictsFromLatLng
+    $request_url = "http://services.sunlightlabs.com/api/districts.getDistrictFromLatLong.xml?&apikey=$sunlightlabs_key&latitude=$lat&longitude=$lng";
+    $xml = simplexml_load_file($request_url) or die ("url not loading: $request_url");
+      $state = $xml->districts->district->state;
+      $number = $xml->districts->district->number;
+      // Use Sunlight Labs' district info to look up legislators
+      // Use legislators.getList
+      // Get senators and representatives separately. 
+      // First get senators. 
+      // For senators, parameters are state=$state and title=Sen.
+      $request_url = "http://services.sunlightlabs.com/api/legislators.getList.xml?&apikey=$sunlightlabs_key&state=$state&title=Sen";
+      $xml = simplexml_load_file($request_url) or die ("url not loading: $request_url");
+        $pending = false;
+        // Format district_sen1, district_sen2, sen1 and sen2. 
+        // district_sen1 and district_sen2 match
+        // unique term_dist values (used as taxonomy terms) 
+        // in the District module (e.g. MA-Senior Seat).
+        // sen1 and sen2 returned
+        // to users in results.csv. Example: John Kerry (D). 
+        //
+        // Iterate through xml to return senators
+        $i = 1;
+        Foreach ($xml->legislators->legislator as $legislator) {
+          $sen_name = $legislator->firstname .' '. $legislator->lastname;
+          $party = $legislator->party;
+          $sen[$i] = $sen_name .' ('. $party .')';
+          $district[$i] = $state .'-'. $legislator->district;
+          $i++;
+        } 
+        $district_sen1 = $district[1];
+        $sen1 = $sen[1]; 
+        $district_sen2 = $district[2];
+        $sen2 = $sen[2];
+
+        // Now retreive representative data.
+        // For House representatives, parameters are state=$statee and district=$number.
+        $request_url = "http://services.sunlightlabs.com/api/legislators.getList.xml?&apikey=$sunlightlabs_key&state=$state&district=$number";
+        $xml = simplexml_load_file($request_url) or die ("url not loading: $request_url");
+        // Format district_rep and rep (follow same formating as for senators 
+        // e.g. MA-8 and Michael Capuano (D) ).
+        $district_rep = $state .'-'. $number;
+        $rep = $xml->legislators->legislator->firstname;
+        $rep .= ' ';
+        $rep .= $xml->legislators->legislator->lastname;
+        $rep .= ' ('.  $xml->legislators->legislator->party .')';
+
+      // Store results in geocoder table.
+      db_query("UPDATE {geocoder} " 
+              ."SET "
+                ."district_sen1 = '%s', "
+                ."district_sen2 = '%s', "
+                ."district_rep = '%s', "
+                ."sen1 = '%s', "
+                ."sen2 = '%s', "
+                ."rep = '%s' "
+              ." WHERE gid = %d ",
+                  check_plain($district_sen1),
+                  check_plain($district_sen2),
+                  check_plain($district_rep),
+                  check_plain($sen1),
+                  check_plain($sen2),
+                  check_plain($rep),
+                  $gid);
+    }  // end while ($pending)
+  } // end while ($row = db_fetch_array...)
+ // Create a new results.csv file
+ // including latest updates. 
+  geocoder_admin_batch_csvr($batch_nid);
+}
+/**
+ * Called by geocoder_admin_batch_geocode().
+ * Create new results_csv for user to download.
+ * A new file should be created every time you run
+ * Geocode Addresses from admin/geocoder/%, since 
+ * presumably, new records get geocoded every time
+ * you run Geocode Addresses. (You would run Geocode
+ * Addresses multiple times for one batch if you are 
+ * processing a large batch and Google times out before
+ * finishing the entire batch.)
+ *
+ */
+function geocoder_admin_batch_csvr($batch_nid) {
+    $module_path = drupal_get_path('module', 'geocoder');
+    $full_path = $module_path .'/csv_files/'. $batch_nid .'-results.csv';
+    // Create file
+    $header = "NAME, STREET, CITY, STATE, ZIP, "
+               ."LATITUDE, LONGITUDE, DISTRICT, "
+               ."REPRESENTATIVE, SENATOR 1, SENATOR 2 \n";
+    file_put_contents($full_path, $header);
+    // Get records from geocoder table. 
+    // Build a new CSV results file, row by row, to return to user.
+    $results = db_query("SELECT * FROM {geocoder} WHERE batch_nid = $batch_nid");
+    while ($address = db_fetch_object($results)) {
+      $row = $address->name .', ';
+      $row .= $address->street .', ';
+      $row .= $address->city .', ';
+      $row .= $address->state .', ';
+      $row .= $address->postal_code .', ';
+      $row .= $address->latitude .', ';
+      $row .= $address->longitude .', ';
+      $row .= $address->district_rep .', ';
+      $row .= $address->rep .', ';
+      $row .= $address->sen1 .', ';
+      $row .= $address->sen2; 
+      $row .= " \n";
+      file_put_contents($full_path, $row, FILE_APPEND);
+    }
+    // Store name of submission_csv in geocoder_batch table 
+    db_query("UPDATE {geocoder_batch} SET results_csv = '%s' WHERE nid = %d ",
+              $full_path,
+              $batch_nid);
+}
+/**
+ * Function called by Create Nodes button.
+ * Create a node for each record in the selected
+ * batch. Then call a function to apply user-defined 
+ * taxonomy terms to the nodes.
+ *
+ */
+function geocoder_admin_batch_nodes() {
+  // Get nid of the batch currently being processed
+  $batch_nid = variable_get('geocoder_current_batch_nid', null);
+
+ // Check to see if the user wants nodes to be published.
+ // The following query assumes you are using CCK for your
+ // content type geocoder_addresses_batch.
+  $results = db_query("SELECT field_publish_addresses_value "
+                        ."FROM {content_type_geocoder_addresses_batch} "
+			."WHERE nid = $batch_nid " );
+  $create_nodes = db_result($results);
+  if ($create_nodes == 1) {
+    // Create nodes for each address record
+    $i = 0;
+    // Iterate through creating nodes.
+    for ($i = 0; $i < 2; $i++) {
+    $i = 2; // I know this is a funny way to loop
+            // through here. Something seems to happen 
+            // behind the scenes w/ Drupal that 
+            // blows away the $results with other loops
+            // I tested. It loops through, but ends up creating
+            // nodes with non-sensical data (with names like O. L, M, P, -).
+
+    $results = db_query("SELECT g.gid, g.name, g.street,g. city, "
+                      ."g.state, g.postal_code, g.info, g.latitude, g.longitude, "
+                      ."n.uid "
+                      ."FROM {geocoder} g "
+                      ."LEFT JOIN {node} n ON g.batch_nid = n.nid "
+                      ."WHERE batch_nid = $batch_nid "
+                      ."AND latitude <> 0.0 " 
+                      ."AND longitude <> 0.0 " // <- geocoded
+                      ."AND g.nid = 0 "        // <- not created yet
+                      ."AND CHARACTER_LENGTH(g.name) > 2 " // <- just incase there are any blank rows hiding in our data
+                      ."LIMIT 1 ");            // It works best this way
+
+    while ($newnode = db_fetch_array($results)) {
+    $i = 0;  // When the query above returns an empty set
+             // $i will not get reset to 0 and the loop ends.
+  
+      $gid = $newnode['gid'];
+      $title = $newnode['name'];
+      $uid = $newnode['uid'];
+      $body = $newnode['info'];
+      $street = $newnode['street'];
+      $city = $newnode['city'];
+      $state = $newnode['state'];
+      $postal_code = $newnode['postal_code'];
+      $latitude = $newnode['latitude'];
+      $longitude = $newnode['longitude'];
+      $source = 3; // 3 is code for Google in location_instance table
+    
+      // Build array with new node's basic data
+      $node = new stdClass();
+      $node->type = 'location';  // Note: You must have a content type called 'location'
+      $node->title = $title;
+      $node->body = $body;
+      $node->teaser = '';
+      $node->uid = $uid;
+      $node->status = 1;
+      $node->promote = 1;    // CHANGE TO 0 FOR PRODUCTION?
+   
+      // Create new node!
+      node_save($node);  
+
+      // The new node is a location (requires Location module).
+      // Add location data.
+      db_query("INSERT INTO {location} "
+          ."(name, street, city, province, postal_code, latitude, longitude, source) "
+          ." VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s') ", 
+          $title,
+          $street,
+          $city,
+          $state,
+          $postal_code,
+          $latitude,
+          $longitude,
+          $source);
+
+      // Now connect the new node and with its location information 
+      // by adding the new nid, vid, lid (and we'll also add the user's uid) 
+      // to the location_instance table.    
+      // get new nid
+      $results = db_query('SELECT nid FROM {node} ORDER BY nid DESC LIMIT 1');
+      $nid = db_result($results);
+    
+      // get new vid
+      $results = db_query('SELECT vid FROM {node_revisions} ORDER BY vid DESC LIMIT 1');
+      $vid = db_result($results);    
+
+      // get new lid
+      $results = db_query('SELECT lid FROM {location} ORDER BY lid DESC LIMIT 1');
+      $lid = db_result($results);    
+
+      db_query("INSERT INTO {location_instance} (nid, vid, uid, lid) "
+             ."VALUES (%d, %d, %d, %d) ", 
+             $nid,
+             $vid,
+             $uid,
+             $lid);
+
+      db_query("UPDATE {geocoder} SET nid = $nid WHERE gid = $gid ");
+
+      // Apply batch's taxonomy terms to the new node.
+      // Look at term_node table. Any tid and vid tied to $batch_nid should 
+      // get applied the batch's to "children" nodes.
+      geocoder_admin_batch_nodes_taxonomy($batch_nid, $nid, $vid); 
+
+      // If user checked 'Apply district taxonomy terms', do this now
+      $district_taxonomy = variable_get('district_taxonomy', TRUE);
+      if ($district_taxonomy == TRUE) {
+        if (module_exists('district'))  
+          district_term_node();  
+      }
+ 
+      } // end create new node while
+    } // end create new node if loop
+  
+    // Update geocoder_batch table to indicate that  
+    // nodes have been created from this batch.
+    db_query("UPDATE {geocoder_batch} SET nodes_created = 1 WHERE nid = $batch_nid ");
+  }
+}
+/**
+ * Apply batch's taxonomy terms to the new node.
+ * Look at term_node table. Any tid and vid tied to $batch_nid should 
+ * get applied the batch's to "children" nodes.
+ *
+ */
+function geocoder_admin_batch_nodes_taxonomy($batch_nid, $nid, $vid) {
+  // Get list of taxonomy terms applied to current batch.
+  $results = db_query("SELECT tid FROM {term_node} WHERE nid = $batch_nid ");
+  // Loop through each taxonomy term applied to the current batch.
+  // Add each term to the new node ($nid).
+  while ($term = db_fetch_object($results)) {
+    $tid = $term->tid;
+    db_query ("INSERT INTO {term_node} (nid, vid, tid) "
+              ."VALUES (%d, %d, %d) ",
+              $nid,
+              $vid,
+              $tid);
+  } 
+}
+/**
+ * Implementation of hook_user().
+ *
+ * Enable users to view and download submission.csv
+ * and results.csv files that they submitted.
+ *
+ */
+function geocoder_user($op, &$edit, &$account, $category) {
+  if ($op == 'view') {
+    global $user;
+    $name = $user->name;
+    // Create the outer submissions "block"
+      $account->content['Batches'] = array(
+        '#type' => 'user_profile_category',
+        '#attributes' => array('class' => 'user-member'),
+        '#weight' => -3,
+        '#title' => $name . t("'s Data:"),
+      );
+    // Get list of user's submissions to display.
+    // Get uid
+    $uid = $user->uid;
+    // Get user's geocoder_addresses_batch submissions 
+    $results = db_query("SELECT nid, title " 
+                        ."FROM {node} "
+                        ."WHERE uid = %d "
+                        ."AND type = '%s' ",
+                        $uid,
+                        'geocoder_addresses_batch');
+    while ($submission = db_fetch_object($results)) {
+      // Create the content of the block
+      $nid = $submission->nid;
+      $title = 'SUBMISSION - '. $submission->title;
+      $module_path = drupal_get_path('module', 'geocoder');
+      $full_path = $module_path .'/csv_files/'. $nid .'-submission.csv';
+      $account->content['BatchSubmissions'][$nid] = array(
+        '#type' => 'user_profile_item',
+        '#value' => l($title, $full_path),
+        '#weight' => 2,
+      );
+    }
+    // Get user's geocoder_addresses_batch results 
+    $results = db_query("SELECT n.nid, title " 
+                        ."FROM {node} n "
+                        ."JOIN {geocoder_batch} g ON g.nid = n.nid "
+                        ."WHERE uid = %d "
+                        ."AND (ISNULL(results_csv)) = 0 "
+                        ."AND type = '%s' ",
+                        $uid,
+                        'geocoder_addresses_batch');
+    while ($submission = db_fetch_object($results)) {
+      $nid = $submission->nid;
+      $title = 'RESULTS - '. $submission->title;
+      $module_path = drupal_get_path('module', 'geocoder');
+      $full_path = $module_path .'/csv_files/'. $nid .'-results.csv';
+      $account->content['BatchResults'][$nid] = array(
+        '#type' => 'user_profile_item',
+        '#value' => l($title, $full_path),
+        '#weight' => 2,
+      );
+    }
+  }
+}
+/**
+ *
+ *
+ */
+function geocoder_admin_batch_email($nid) {
+
+}    

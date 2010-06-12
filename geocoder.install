@@ -1,0 +1,207 @@
+<?php
+// $Id$
+/**
+ * Install the geocoder module, including its corresponding
+ * tables: geocoder_batch, geocoder.
+ * @file
+ */
+/**
+ * Implementation of hook_install().
+ *
+ */
+function geocoder_install() {
+  drupal_install_schema('geocoder_batch');
+  drupal_install_schema('geocoder');
+}
+/**
+ * Implementation of hook_uninstall().
+ *
+ */
+function geocoder_uninstall() {
+  drupal_uninstall_schema('geocoder_batch');
+  drupal_uninstall_schema('geocoder');
+}
+/**
+ * Implementation of hook_schema().
+ *
+ */
+function geocoder_schema() {
+  $schema['geocoder_batch'] = array(
+    'fields' => array(
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'submission_csv' => array(
+        'type' => 'varchar',
+        'length' => 100,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'geocoded' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'results_csv' => array(
+        'type' => 'varchar',
+        'length' => 100,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'nodes_created' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'confirm_email_sent' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('nid'),
+  );
+  $schema['geocoder'] = array(
+    'fields' => array(
+      'gid' => array(
+         'type' => 'serial',
+         'unsigned' => TRUE,
+         'not null' => TRUE,
+      ),
+      'batch_nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'lid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'name' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '', 
+        'description' => 'Location Name',
+      ),
+      'street' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '', 
+        'description' => 'Street address',
+      ),
+      'city' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '', 
+        'description' => 'City / Town',
+      ),
+      'state' => array(
+        'type' => 'varchar',
+        'length' => 16,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'State', 
+      ),
+      'postal_code' => array(
+        'type' => 'varchar',
+        'length' => 16,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Postal / Zip Code',
+      ),
+      'info' => array(
+        'type' => 'text',
+        'not null' => FALSE,
+      ),
+      'latitude' => array(
+        'type' => 'numeric',
+        'precision' => 10,
+        'scale' => 6,
+        'not null' => TRUE,
+        'default' => 0.0,
+        'description' => 'Location latitude (decimal degrees)',
+      ),
+      'longitude' => array(
+        'type' => 'numeric',
+        'precision' => 10,
+        'scale' => 6,
+        'not null' => TRUE,
+        'default' =>  0.0,
+        'description' => 'Location longitude (decimal degrees)',
+      ),
+      // Match to term_dist field in district table
+      'district_rep' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => "representative's district",
+      ),
+      // Match to term_dist field in district table
+      'district_sen1' => array(
+        'type' => 'varchar', 
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => "first senator's  district",
+      ),
+      // Match to term_dist field in district table
+      'district_sen2' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => "second senator's district",
+      ),
+      // For CSV results file for user 
+      'rep' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => "representative",
+      ),
+      // For CSV results file for user 
+      'sen1' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => "first senator",
+      ),
+      // For CSV results file for user 
+      'sen2' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => "second senator",
+      ),
+     ),
+    'indexes' => array(
+      'nid' => array('nid'),
+      'lid' => array('lid'),
+      'batch_nid' => array('batch_nid'),
+    ),
+    'primary key' => array('gid'),
+  );
+  return $schema;
+}

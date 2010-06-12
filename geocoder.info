@@ -1,0 +1,8 @@
+; $Id$
+name = "Geocoder"
+description = "Take a comma delimited (CSV) list of addresses, look up latitude and longitude coordinates and corresponding political districts. Convert addresses into locations (nodes), optionally tagged with political districts."
+core = 6.x
+php = 5.1
+package = Democracy
+dependencies[] = "location"
+dependencies[] = "cck"
